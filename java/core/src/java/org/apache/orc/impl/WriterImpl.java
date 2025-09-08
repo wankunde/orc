@@ -545,7 +545,20 @@ public class WriterImpl implements WriterInternal, MemoryManager.Callback {
     dirEntry.setEncryptStripeId(1 + stripes.size());
   }
 
+  public long flushStripTime = 0;
+  public long flushStripCount = 0;
+
+  @Override
+  public long getFlushStripeTime() {
+    return flushStripTime;
+  }
+
+  public long getFlushStripeCount() {
+    return flushStripCount;
+  }
+
   private void flushStripe() throws IOException {
+    long start = System.currentTimeMillis();
     if (buildIndex && rowsInIndex != 0) {
       createRowIndexEntry();
     }
@@ -590,6 +603,8 @@ public class WriterImpl implements WriterInternal, MemoryManager.Callback {
       rowCount += rowsInStripe;
       rowsInStripe = 0;
     }
+    flushStripTime += System.currentTimeMillis() - start;
+    flushStripCount++;
   }
 
   private long computeRawDataSize() {

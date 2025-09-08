@@ -23,37 +23,89 @@ import org.apache.hadoop.fs.Path;
 import org.apache.hadoop.hive.ql.exec.vector.BytesColumnVector;
 import org.apache.hadoop.hive.ql.exec.vector.LongColumnVector;
 import org.apache.hadoop.hive.ql.exec.vector.VectorizedRowBatch;
+import org.apache.hadoop.util.StopWatch;
 import org.apache.orc.OrcFile;
 import org.apache.orc.TypeDescription;
 import org.apache.orc.Writer;
 
+import java.io.File;
 import java.io.IOException;
-import java.nio.charset.StandardCharsets;
+import java.util.Arrays;
+import java.util.concurrent.TimeUnit;
 
 public class CoreWriter {
+  public static byte[] binaryValue = new byte[20];
+
   public static void main(Configuration conf, String[] args) throws IOException {
-    TypeDescription schema = TypeDescription.fromString("struct<x:int,y:string>");
+    System.out.println("Enable new memory check:");
+    doBenchmarks(conf);
+    System.out.println("Disable new memory check:");
+    conf.setLong("orc.stripe.size.check", 0);
+    conf.setLong("orc.dictionary.maxSizeInBytes", 0);
+    doBenchmarks(conf);
+  }
+
+  public static void doBenchmarks(Configuration conf) throws IOException {
+    testCheckMemoryCost(conf, 1, 10);
+    testCheckMemoryCost(conf, 100, 10);
+    testCheckMemoryCost(conf, 1024, 10);
+    testCheckMemoryCost(conf, 1024, 100);
+    testCheckMemoryCost(conf, 1024, 300);
+    testCheckMemoryCost(conf, 1024, 500);
+    testCheckMemoryCost(conf, 1024, 1000);
+    testCheckMemoryCost(conf, 1024, 5000);
+    testCheckMemoryCost(conf, 1024, 10000);
+  }
+
+  static void testCheckMemoryCost(Configuration conf, int batchSize, int columnNum) throws IOException {
+    File f = new File("my-file.orc");
+    if (f.exists()) {
+      f.delete();
+    }
+
+    StringBuilder schemaBuilder = new StringBuilder("struct<");
+    for (int i = 0; i < columnNum; i++) {
+      if (i > 0) schemaBuilder.append(",");
+      schemaBuilder.append("col").append(i).append(":");
+      schemaBuilder.append(i % 2 == 0 ? "int" : "string");
+    }
+    schemaBuilder.append(">");
+    TypeDescription schema = TypeDescription.fromString(schemaBuilder.toString());
+
     Writer writer = OrcFile.createWriter(new Path("my-file.orc"),
-                                         OrcFile.writerOptions(conf)
-                                          .setSchema(schema));
-    VectorizedRowBatch batch = schema.createRowBatch();
-    LongColumnVector x = (LongColumnVector) batch.cols[0];
-    BytesColumnVector y = (BytesColumnVector) batch.cols[1];
-    for(int r=0; r < 10000; ++r) {
+        OrcFile.writerOptions(conf).setSchema(schema));
+    VectorizedRowBatch batch = schema.createRowBatch(batchSize);
+    Arrays.fill(binaryValue, (byte) 0);
+
+    StopWatch watch = new StopWatch();
+    for (int r = 0; r < 10000; ++r) {
       int row = batch.size++;
-      x.vector[row] = r;
-      byte[] buffer = ("Last-" + (r * 3)).getBytes(StandardCharsets.UTF_8);
-      y.setRef(row, buffer, 0, buffer.length);
-      // If the batch is full, write it out and start over.
+      for (int c = 0; c < columnNum; c++) {
+        if (c % 2 == 0) {
+          ((LongColumnVector) batch.cols[c]).vector[row] = r + c;
+        } else {
+          ((BytesColumnVector) batch.cols[c]).setRef(row, binaryValue, 0, binaryValue.length);
+        }
+      }
       if (batch.size == batch.getMaxSize()) {
+        watch.start();
         writer.addRowBatch(batch);
+        watch.stop();
         batch.reset();
       }
     }
     if (batch.size != 0) {
+      watch.start();
       writer.addRowBatch(batch);
+      watch.stop();
     }
+    watch.start();
     writer.close();
+    watch.stop();
+    System.out.println("Batch Size: " + batchSize + ", column Num: " + columnNum +
+        ", took " + watch.now(TimeUnit.MILLISECONDS) + " ms to write 10000 rows, " +
+        "flush stripe time: " + writer.getFlushStripeTime() + " ms, " +
+        "flush stripe count: " + writer.getFlushStripeCount());
   }
 
   public static void main(String[] args) throws IOException {

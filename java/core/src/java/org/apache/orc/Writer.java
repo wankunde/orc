@@ -155,6 +155,10 @@ public interface Writer extends Closeable {
    */
   ColumnStatistics[] getStatistics() throws IOException;
 
+  long getFlushStripeTime();
+
+  long getFlushStripeCount();
+
   /**
    * Get the stripe information about the file. The output of this is based on the time at which it
    * is called. It shall return stripes that have been completed.
